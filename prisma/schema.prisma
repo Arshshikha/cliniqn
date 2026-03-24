@@ -1,0 +1,186 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+///////////////////////
+// ENUMS
+///////////////////////
+
+enum Role {
+  DOCTOR
+  ADMIN
+  STAFF
+}
+
+enum SessionStatus {
+  ACTIVE
+  COMPLETED
+  TERMINATED
+}
+
+enum StepStatus {
+  PENDING
+  COMPLETED
+  SKIPPED
+}
+
+enum SenderType {
+  USER
+  AI
+}
+
+///////////////////////
+// ORGANIZATION (MULTI-TENANT)
+///////////////////////
+
+model Organization {
+  id          String   @id @default(uuid())
+  name        String
+  createdAt   DateTime @default(now())
+
+  users       User[]
+}
+
+///////////////////////
+// USER MODEL
+///////////////////////
+
+model User {
+  id              String   @id @default(uuid())
+  name            String
+  email           String   @unique
+  password        String
+  role            Role     @default(DOCTOR)
+
+  organizationId  String
+  organization    Organization @relation(fields: [organizationId], references: [id])
+
+  // JWT Auth Ready Fields
+  refreshToken    String?
+  tokenVersion    Int      @default(0)
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  sessions        EmergencySession[]
+  chats           Chat[]
+}
+
+///////////////////////
+// EMERGENCY SESSION
+///////////////////////
+
+model EmergencySession {
+  id           String   @id @default(uuid())
+  userId       String
+  protocolId   String
+
+  status       SessionStatus @default(ACTIVE)
+  patientWeight Float?
+
+  startedAt    DateTime @default(now())
+  endedAt      DateTime?
+
+  user         User     @relation(fields: [userId], references: [id])
+  protocol     Protocol @relation(fields: [protocolId], references: [id])
+
+  stepLogs     SessionStepLog[]
+  aiLogs       AISuggestion[]
+  chats        Chat[]
+}
+
+///////////////////////
+// PROTOCOL
+///////////////////////
+
+model Protocol {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+
+  createdAt   DateTime @default(now())
+
+  steps       Step[]
+  sessions    EmergencySession[]
+}
+
+///////////////////////
+// STEPS
+///////////////////////
+
+model Step {
+  id          String   @id @default(uuid())
+  protocolId  String
+
+  title       String
+  description String
+  order       Int
+
+  protocol    Protocol @relation(fields: [protocolId], references: [id])
+
+  logs        SessionStepLog[]
+}
+
+///////////////////////
+// STEP LOG
+///////////////////////
+
+model SessionStepLog {
+  id           String   @id @default(uuid())
+  sessionId    String
+  stepId       String
+
+  status       StepStatus @default(PENDING)
+  completedAt  DateTime?
+
+  session      EmergencySession @relation(fields: [sessionId], references: [id])
+  step         Step             @relation(fields: [stepId], references: [id])
+}
+
+///////////////////////
+// AI SUGGESTIONS
+///////////////////////
+
+model AISuggestion {
+  id          String   @id @default(uuid())
+  sessionId   String
+
+  message     String
+  createdAt   DateTime @default(now())
+
+  session     EmergencySession @relation(fields: [sessionId], references: [id])
+}
+
+///////////////////////
+// CHAT SYSTEM (AI ASSISTANT)
+///////////////////////
+
+model Chat {
+  id          String   @id @default(uuid())
+  userId      String
+  sessionId   String?
+
+  createdAt   DateTime @default(now())
+
+  user        User     @relation(fields: [userId], references: [id])
+  session     EmergencySession? @relation(fields: [sessionId], references: [id])
+
+  messages    ChatMessage[]
+}
+
+model ChatMessage {
+  id        String   @id @default(uuid())
+  chatId    String
+
+  sender    SenderType
+  content   String
+
+  createdAt DateTime @default(now())
+
+  chat      Chat @relation(fields: [chatId], references: [id])
+}
