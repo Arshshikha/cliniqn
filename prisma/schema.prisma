@@ -1,186 +1,1611 @@
+
+
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [
+    pgvector(map: "vector",    schema: "extensions"),
+    pg_trgm(map: "pg_trgm",   schema: "extensions"),  // trigram full-text search
+    btree_gin(map: "btree_gin",schema: "extensions")   // GIN index on JSONB + scalar
+  ]
 }
 
-///////////////////////
+// ══════════════════════════════════════════════════════════════════════════════
 // ENUMS
-///////////////////////
+// ══════════════════════════════════════════════════════════════════════════════
 
-enum Role {
+enum UserRole {
+  SUPER_ADMIN
+  ORG_ADMIN
   DOCTOR
-  ADMIN
+  SPECIALIST
+  RESIDENT
   STAFF
+  MEDICAL_STUDENT
+}
+
+enum SpecialtyDomain {
+  CARDIOLOGY
+  NEUROLOGY
+  EMERGENCY_MEDICINE
+  ONCOLOGY
+  PEDIATRICS
+  SURGERY
+  INTERNAL_MEDICINE
+  RADIOLOGY
+  PSYCHIATRY
+  ANESTHESIOLOGY
+  DERMATOLOGY
+  OBSTETRICS_GYNECOLOGY
+  ORTHOPEDICS
+  PULMONOLOGY
+  NEPHROLOGY
+  GASTROENTEROLOGY
+  ENDOCRINOLOGY
+  INFECTIOUS_DISEASE
+  RHEUMATOLOGY
+  OTHER
+}
+
+enum CaseStatus {
+  DRAFT
+  ACTIVE
+  UNDER_REVIEW
+  RESOLVED
+  CLOSED
+  ARCHIVED
+}
+
+enum CasePriority {
+  ROUTINE
+  URGENT
+  CRITICAL
+  EMERGENT
+}
+
+enum CaseVisibility {
+  PRIVATE          // only assigned team
+  ORGANIZATION     // whole org
+  TEACHING         // available to students
+  PUBLIC           // shared across orgs (anonymized)
+}
+
+enum ObservationType {
+  VITAL_SIGN
+  LAB_RESULT
+  IMAGING
+  CLINICAL_NOTE
+  MEDICATION_ORDER
+  MEDICATION_ADMINISTRATION
+  PROCEDURE
+  SYMPTOM
+  DIAGNOSIS
+  ALLERGY
+  MICROBIOLOGY
+  PATHOLOGY
+  OUTCOME
+  DISCHARGE_SUMMARY
+}
+
+enum ObservationSource {
+  MANUAL_ENTRY
+  AI_INFERRED
+  EHR_IMPORT
+  DEVICE_FEED
+  OCR_EXTRACTED
+  PATIENT_REPORTED
+}
+
+enum StoryboardEntryType {
+  AI_SUMMARY
+  AI_RECOMMENDATION
+  AI_DIFFERENTIAL
+  AI_RISK_FLAG
+  AI_DRUG_INTERACTION
+  AI_OBSERVATION
+  MILESTONE
+  STATUS_CHANGE
+  ALERT
+  HANDOFF_NOTE
+  DOCTOR_ANNOTATION
+}
+
+enum ConversationContext {
+  CASE_CONSULT
+  COLLAB_ROOM
+  KNOWLEDGE_QUERY
+  PROTOCOL_GUIDANCE
+  LEARNING
+  FREEFORM
+  SECOND_OPINION
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+  TOOL_CALL
+  TOOL_RESULT
+}
+
+enum CollabRoomStatus {
+  SCHEDULED
+  WAITING
+  ACTIVE
+  PAUSED
+  CLOSED
+  CANCELLED
+}
+
+enum CollabRoomType {
+  CASE_REVIEW
+  GRAND_ROUNDS
+  TUMOR_BOARD
+  EMERGENCY_CONSULT
+  TEACHING_SESSION
+  PEER_REVIEW
+  SUPERVISION
+}
+
+enum ParticipantRole {
+  LEAD
+  CONSULTANT
+  PRESENTER
+  SUPERVISOR
+  OBSERVER
+  STUDENT
+  AI_MODERATOR
+}
+
+enum EmbeddingSourceType {
+  EXPERTISE_POST
+  CASE_OBSERVATION
+  STORYBOARD_ENTRY
+  KNOWLEDGE_CHUNK
+  PROTOCOL_STEP
+  AI_MESSAGE
+  ANNOTATION
+  CONTENT_ASSET
+  CASE_SUMMARY
+}
+
+enum StepStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  SKIPPED
+  ESCALATED
+  FAILED
 }
 
 enum SessionStatus {
   ACTIVE
   COMPLETED
   TERMINATED
+  HANDED_OFF
+  SUSPENDED
 }
 
-enum StepStatus {
+enum PostStatus {
+  DRAFT
+  SUBMITTED
+  UNDER_REVIEW
+  PUBLISHED
+  REJECTED
+  ARCHIVED
+}
+
+enum AuditAction {
+  CREATE
+  READ
+  UPDATE
+  DELETE
+  EXPORT
+  IMPORT
+  LOGIN
+  LOGOUT
+  LOGIN_FAILED
+  PASSWORD_RESET
+  MFA_CHALLENGE
+  AI_INVOKED
+  AI_FEEDBACK_GIVEN
+  ACCESS_GRANTED
+  ACCESS_REVOKED
+  CASE_SHARED
+  CASE_ANONYMIZED
+  STORYBOARD_UPDATED
+  PROTOCOL_EXECUTED
+  ROOM_JOINED
+  ROOM_LEFT
+}
+
+enum ContentAssetType {
+  IMAGE
+  VIDEO
+  AUDIO
+  PDF
+  DICOM          // medical imaging
+  ECG            // electrocardiogram
+  DOCUMENT
+  SPREADSHEET
+  DATASET
+  SLIDE_DECK
+  ARCHIVE
+}
+
+enum ContentAssetStatus {
+  PENDING_UPLOAD
+  PROCESSING
+  READY
+  FAILED
+  QUARANTINED    // failed virus scan
+  DELETED
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  SMS
+  PUSH
+  WEBHOOK
+}
+
+enum NotificationStatus {
   PENDING
-  COMPLETED
-  SKIPPED
+  SENT
+  DELIVERED
+  READ
+  FAILED
 }
 
-enum SenderType {
-  USER
-  AI
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  REVOKED
 }
 
-///////////////////////
-// ORGANIZATION (MULTI-TENANT)
-///////////////////////
+enum ProtocolStepType {
+  ACTION          // do something
+  DECISION        // branch point
+  WAIT            // timed pause
+  ASSESSMENT      // evaluate patient
+  MEDICATION      // drug administration
+  ESCALATE        // hand off
+  DOCUMENTATION   // record something
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DOMAIN 1 — IDENTITY & ACCESS
+// ══════════════════════════════════════════════════════════════════════════════
 
 model Organization {
-  id          String   @id @default(uuid())
+  id          BigInt   @id @default(autoincrement())
   name        String
-  createdAt   DateTime @default(now())
+  slug        String   @unique
+  logoUrl     String?
+  website     String?
+  country     String?
+  timezone    String   @default("UTC")
+  locale      String   @default("en")
+  isActive    Boolean  @default(true)
+  isVerified  Boolean  @default(false)   // platform-verified institution
+  tier        String   @default("free")  // "free" | "pro" | "enterprise"
+  trialEndsAt DateTime?
+  suspendedAt DateTime?
+  suspendReason String?
 
-  users       User[]
+  // Feature flags + org-specific LLM config + branding + anything else
+  metadata    Json     @default("{}")
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users            User[]
+  cases            ClinicalCase[]
+  rooms            CollabRoom[]
+  protocols        MedicalProtocol[]
+  knowledgeChunks  KnowledgeChunk[]
+  auditLogs        AuditLog[]
+  tags             Tag[]
+  invites          Invite[]
+  contentAssets    ContentAsset[]
+  apiKeys          ApiKey[]
+  webhooks         Webhook[]
+
+  @@index([slug])
+  @@index([isActive, tier])
 }
 
-///////////////////////
-// USER MODEL
-///////////////////////
-
 model User {
-  id              String   @id @default(uuid())
+  id              BigInt          @id @default(autoincrement())
+  organizationId  BigInt
+  email           String          @unique
+  passwordHash    String
   name            String
-  email           String   @unique
-  password        String
-  role            Role     @default(DOCTOR)
+  displayName     String?
+  avatarUrl       String?
+  role            UserRole        @default(DOCTOR)
+  specialties     SpecialtyDomain[]
+  yearsExperience Int?
+  licenseNumber   String?
+  licenseCountry  String?
+  institution     String?
+  department      String?
+  bio             String?
+  timezone        String          @default("UTC")
+  locale          String          @default("en")
+  isVerified      Boolean         @default(false)
+  isActive        Boolean         @default(true)
+  isSuspended     Boolean         @default(false)
+  suspendReason   String?
 
-  organizationId  String
-  organization    Organization @relation(fields: [organizationId], references: [id])
+  // Auth
+  refreshToken      String?
+  tokenVersion      Int             @default(0)
+  mfaSecret         String?
+  mfaEnabled        Boolean         @default(false)
+  emailVerifiedAt   DateTime?
+  lastLoginAt       DateTime?
+  lastLoginIp       String?
+  failedLoginCount  Int             @default(0)
+  lockedUntil       DateTime?
+  passwordChangedAt DateTime?
 
-  // JWT Auth Ready Fields
-  refreshToken    String?
-  tokenVersion    Int      @default(0)
+  // Preferences, UI settings, notification preferences, AI persona config
+  preferences  Json     @default("{}")
+  metadata     Json     @default("{}")
 
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  deletedAt    DateTime?   // soft-delete
+
+  organization           Organization          @relation(fields: [organizationId], references: [id])
+  ownedCases             ClinicalCase[]        @relation("CaseOwner")
+  caseAssignments        CaseAssignment[]
+  emergencySessions      EmergencySession[]
+  conversations          AIConversation[]
+  collabParticipations   CollabParticipant[]
+  expertisePosts         ExpertisePost[]
+  postComments           PostComment[]
+  postReactions          PostReaction[]
+  learningSessions       LearningSession[]
+  annotations            Annotation[]
+  storyboardEntries      StoryboardEntry[]     @relation("EntryAuthor")
+  aiFeedback             AIFeedback[]
+  auditLogs              AuditLog[]
+  notifications          Notification[]
+  notificationsSent      Notification[]        @relation("NotificationSender")
+  sentInvites            Invite[]              @relation("InviteSender")
+  uploadedAssets         ContentAsset[]        @relation("AssetUploader")
+  savedSearches          SavedSearch[]
+  userTags               UserTag[]
+  mentorships            Mentorship[]          @relation("Mentor")
+  menteeof               Mentorship[]          @relation("Mentee")
+  sessionStepLogs        SessionStepLog[]      @relation("StepExecutor")
+
+  @@index([organizationId, role])
+  @@index([organizationId, isActive])
+  @@index([email])
+  @@index([deletedAt])
+}
+
+model ApiKey {
+  id             BigInt   @id @default(autoincrement())
+  organizationId BigInt
+  name           String
+  keyHash        String   @unique   // store only hash, never plaintext
+  keyPrefix      String             // first 8 chars for identification
+  scopes         String[]           // ["cases:read", "ai:invoke", ...]
+  expiresAt      DateTime?
+  lastUsedAt     DateTime?
+  isActive       Boolean  @default(true)
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id])
+
+  @@index([organizationId, isActive])
+}
+
+model Webhook {
+  id             BigInt   @id @default(autoincrement())
+  organizationId BigInt
+  url            String
+  secret         String
+  events         String[] // ["case.created", "storyboard.updated", ...]
+  isActive       Boolean  @default(true)
+  failureCount   Int      @default(0)
+  lastFiredAt    DateTime?
+  lastStatusCode Int?
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@index([organizationId, isActive])
+}
+
+model Invite {
+  id             BigInt       @id @default(autoincrement())
+  organizationId BigInt
+  senderId       BigInt
+  email          String
+  role           UserRole     @default(DOCTOR)
+  status         InviteStatus @default(PENDING)
+  token          String       @unique
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  metadata       Json         @default("{}")
+  createdAt      DateTime     @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  sender       User         @relation("InviteSender", fields: [senderId], references: [id])
+
+  @@index([organizationId, status])
+  @@index([token])
+  @@index([email])
+}
+
+// Doctor ↔ student mentorship tracking
+model Mentorship {
+  id         BigInt    @id @default(autoincrement())
+  mentorId   BigInt
+  menteeId   BigInt
+  startDate  DateTime  @default(now())
+  endDate    DateTime?
+  focus      String?
+  notes      String?
+  isActive   Boolean   @default(true)
+  metadata   Json      @default("{}")
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  mentor User @relation("Mentor", fields: [mentorId], references: [id])
+  mentee User @relation("Mentee", fields: [menteeId], references: [id])
+
+  @@unique([mentorId, menteeId])
+  @@index([menteeId])
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DOMAIN 2 — CLINICAL WORKSPACE
+// ══════════════════════════════════════════════════════════════════════════════
+
+model ClinicalCase {
+  id              BigInt           @id @default(autoincrement())
+  organizationId  BigInt
+  ownerId         BigInt
+  title           String
+  chiefComplaint  String?
+  summary         String?          // AI-maintained rolling summary
+  status          CaseStatus       @default(ACTIVE)
+  priority        CasePriority     @default(ROUTINE)
+  visibility      CaseVisibility   @default(PRIVATE)
+  specialty       SpecialtyDomain?
+  icdCodes        String[]         // ICD-10 / ICD-11 codes
+  snomed          String[]         // SNOMED CT codes
+
+  // De-identified patient context (no PII stored)
+  patientAgeYears    Int?
+  patientAgeBracket  String?       // "adult", "pediatric", "neonate", "geriatric"
+  patientSex         String?
+  patientWeightKg    Float?
+  patientHeightCm    Float?
+  patientBMI         Float?
+  patientBloodType   String?
+  presentationDate   DateTime?
+  admissionType      String?       // "emergency", "elective", "transfer"
+  dischargeDate      DateTime?
+  dischargeType      String?       // "home", "icu", "transfer", "expired"
+
+  isAnonymized       Boolean       @default(true)
+  isTeachingCase     Boolean       @default(false)
+  isPublished        Boolean       @default(false)   // shared to public knowledge base
+  complexityScore    Float?        // AI-computed 0–10
+  acuityScore        Float?        // AI-computed severity
+  readmissionRisk    Float?        // AI risk prediction 0–1
+
+  // Hotfix / custom fields / integration payloads / EHR correlation IDs
+  metadata     Json     @default("{}")
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  resolvedAt   DateTime?
+  archivedAt   DateTime?
+
+  organization       Organization        @relation(fields: [organizationId], references: [id])
+  owner              User                @relation("CaseOwner", fields: [ownerId], references: [id])
+  assignments        CaseAssignment[]
+  observations       CaseObservation[]
+  storyboard         Storyboard?
+  conversations      AIConversation[]
+  collabRooms        CollabRoom[]
+  emergencySessions  EmergencySession[]
+  learningSessions   LearningSession[]
+  tags               CaseTag[]
+  auditLogs          AuditLog[]          @relation("CaseAuditLogs")
+  contentAssets      CaseAsset[]
+  timeline           CaseTimelineEvent[]
+  secondOpinions     SecondOpinionRequest[]
+  alerts             ClinicalAlert[]
+
+  @@index([organizationId, status])
+  @@index([organizationId, priority])
+  @@index([ownerId])
+  @@index([specialty])
+  @@index([isTeachingCase])
+  @@index([createdAt])
+}
+
+model CaseAssignment {
+  id          BigInt   @id @default(autoincrement())
+  caseId      BigInt
+  userId      BigInt
+  role        String   // "primary", "consultant", "covering", "observer"
+  note        String?
+  assignedAt  DateTime @default(now())
+  removedAt   DateTime?
+  isActive    Boolean  @default(true)
+  metadata    Json     @default("{}")
+
+  case ClinicalCase @relation(fields: [caseId], references: [id])
+  user User         @relation(fields: [userId], references: [id])
+
+  @@unique([caseId, userId])
+  @@index([userId, isActive])
+  @@index([caseId, isActive])
+}
+
+// Structured clinical observations: labs, vitals, notes, imaging, meds
+model CaseObservation {
+  id              BigInt            @id @default(autoincrement())
+  caseId          BigInt
+  type            ObservationType
+  source          ObservationSource @default(MANUAL_ENTRY)
+  label           String            // "Heart Rate", "Na+", "Hemoglobin"
+  value           String?           // raw string value
+  unit            String?
+  numericValue    Float?
+  referenceRangeLow  Float?
+  referenceRangeHigh Float?
+  isAbnormal      Boolean?
+  abnormalityLevel String?          // "mild", "moderate", "critical"
+  confidence      Float?            // 0–1 for AI-inferred
+  bodySite        String?           // anatomical location
+  laterality      String?           // "left", "right", "bilateral"
+  method          String?           // measurement method / device
+  performedBy     String?           // who ordered/performed
+  verifiedAt      DateTime?
+  verifiedById    BigInt?
+  contentAssetId  BigInt?           // link to image/DICOM/PDF
+  observedAt      DateTime          @default(now())
+  recordedAt      DateTime          @default(now())
+
+  // EHR field map, FHIR resource, device raw payload, anything else
+  metadata    Json     @default("{}")
+
+  case        ClinicalCase     @relation(fields: [caseId], references: [id])
+  embeddings  VectorEmbedding[]
+
+  @@index([caseId, type])
+  @@index([caseId, observedAt])
+  @@index([caseId, isAbnormal])
+}
+
+// Discrete events on a case timeline (for visual timeline UI)
+model CaseTimelineEvent {
+  id        BigInt   @id @default(autoincrement())
+  caseId    BigInt
+  eventType String   // "admission", "lab_critical", "procedure", "transfer", etc.
+  title     String
+  body      String?
+  actorId   BigInt?  // user or null for AI/system
+  isAI      Boolean  @default(false)
+  occurredAt DateTime @default(now())
+  metadata   Json     @default("{}")
+
+  case ClinicalCase @relation(fields: [caseId], references: [id])
+
+  @@index([caseId, occurredAt])
+}
+
+// AI- or doctor-triggered clinical alerts
+model ClinicalAlert {
+  id          BigInt   @id @default(autoincrement())
+  caseId      BigInt
+  triggeredBy String   // "AI", or userId stringified
+  alertType   String   // "drug_interaction", "critical_lab", "deterioration_risk", etc.
+  severity    String   // "info", "warning", "critical"
+  title       String
+  body        String
+  isRead      Boolean  @default(false)
+  isDismissed Boolean  @default(false)
+  dismissedBy BigInt?
+  dismissedAt DateTime?
+  resolvedAt  DateTime?
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+
+  case ClinicalCase @relation(fields: [caseId], references: [id])
+
+  @@index([caseId, isRead])
+  @@index([caseId, severity])
+}
+
+// Formal second-opinion requests between doctors / specialties
+model SecondOpinionRequest {
+  id              BigInt   @id @default(autoincrement())
+  caseId          BigInt
+  requesterId     BigInt
+  specialistId    BigInt?  // null until accepted
+  specialty       SpecialtyDomain?
+  urgency         String   @default("routine")
+  question        String   // specific clinical question
+  response        String?
+  status          String   @default("pending") // pending|accepted|completed|declined
+  respondedAt     DateTime?
+  metadata        Json     @default("{}")
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  sessions        EmergencySession[]
-  chats           Chat[]
+  case ClinicalCase @relation(fields: [caseId], references: [id])
+
+  @@index([caseId])
+  @@index([specialistId, status])
 }
 
-///////////////////////
-// EMERGENCY SESSION
-///////////////////////
+// ══════════════════════════════════════════════════════════════════════════════
+// DOMAIN 3 — STORYBOARD (AI EVOLVING NARRATIVE)
+// ══════════════════════════════════════════════════════════════════════════════
 
-model EmergencySession {
-  id           String   @id @default(uuid())
-  userId       String
-  protocolId   String
+// One storyboard per case — the living AI-maintained treatment narrative
+model Storyboard {
+  id           BigInt   @id @default(autoincrement())
+  caseId       BigInt   @unique
+  title        String   @default("Case Narrative")
+  rollingSum   String?  // AI-maintained concise rolling summary (last ~500 tokens worth)
+  fullNarrative String? // Full narrative rebuilt periodically by AI
+  aiModelUsed  String?
+  promptVersion String?  // which prompt template generated this
+  version      Int      @default(1)
+  wordCount    Int?
+  lastAiRunAt  DateTime?
+  nextAiRunAt  DateTime? // scheduled AI re-evaluation
+  metadata     Json     @default("{}")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
-  status       SessionStatus @default(ACTIVE)
-  patientWeight Float?
-
-  startedAt    DateTime @default(now())
-  endedAt      DateTime?
-
-  user         User     @relation(fields: [userId], references: [id])
-  protocol     Protocol @relation(fields: [protocolId], references: [id])
-
-  stepLogs     SessionStepLog[]
-  aiLogs       AISuggestion[]
-  chats        Chat[]
+  case    ClinicalCase     @relation(fields: [caseId], references: [id])
+  entries StoryboardEntry[]
 }
 
-///////////////////////
-// PROTOCOL
-///////////////////////
+// Each discrete event the AI or doctor appends to the evolving story
+model StoryboardEntry {
+  id              BigInt              @id @default(autoincrement())
+  storyboardId    BigInt
+  authorId        BigInt?             // null = AI-generated
+  type            StoryboardEntryType
+  title           String?
+  content         String              // narrative text
+  reasoning       String?             // AI chain-of-thought
+  confidence      Float?              // 0–1 for AI entries
+  isAIGenerated   Boolean             @default(false)
+  isVerifiedByMD  Boolean             @default(false)
+  verifiedById    BigInt?
+  verifiedAt      DateTime?
+  isFlagged       Boolean             @default(false)
+  flagReason      String?
+  sequenceNum     Int                 // ordering within storyboard
+  parentEntryId   BigInt?             // for reply/amendment chain
+  observationRefs BigInt[]            // IDs of observations that triggered this
+  messageRefs     BigInt[]            // IDs of AI messages that produced this
 
-model Protocol {
-  id          String   @id @default(uuid())
-  name        String
+  // Linked diff, evidence refs, drug refs, guideline links
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  storyboard    Storyboard       @relation(fields: [storyboardId], references: [id])
+  author        User?            @relation("EntryAuthor", fields: [authorId], references: [id])
+  parentEntry   StoryboardEntry? @relation("EntryThread", fields: [parentEntryId], references: [id])
+  replies       StoryboardEntry[] @relation("EntryThread")
+  embeddings    VectorEmbedding[]
+
+  @@index([storyboardId, sequenceNum])
+  @@index([storyboardId, type])
+  @@index([storyboardId, createdAt])
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DOMAIN 4 — AI ENGINE
+// ══════════════════════════════════════════════════════════════════════════════
+
+model AIConversation {
+  id            BigInt              @id @default(autoincrement())
+  userId        BigInt
+  context       ConversationContext
+  caseId        BigInt?
+  roomId        BigInt?
+  sessionId     BigInt?             // emergency session context
+  title         String?
+  description   String?
+  systemPrompt  String?             // active system prompt snapshot
+  modelUsed     String?
+  temperature   Float?
+  maxTokens     Int?
+  totalTokens   Int      @default(0)
+  totalMessages Int      @default(0)
+  totalCostUsd  Float?              // tracked API cost
+  isArchived    Boolean  @default(false)
+  isPinned      Boolean  @default(false)
+  archivedAt    DateTime?
+  sharedWithIds BigInt[]            // users this convo is shared with
+
+  // Prompt engineering config, RAG context, tool configs
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user      User          @relation(fields: [userId], references: [id])
+  case      ClinicalCase? @relation(fields: [caseId], references: [id])
+  room      CollabRoom?   @relation(fields: [roomId], references: [id])
+  messages  AIMessage[]
+  feedback  AIFeedback[]
+
+  @@index([userId, context])
+  @@index([userId, isArchived])
+  @@index([caseId])
+  @@index([roomId])
+  @@index([createdAt])
+}
+
+model AIMessage {
+  id              BigInt      @id @default(autoincrement())
+  conversationId  BigInt
+  role            MessageRole
+  content         String
+  contentType     String      @default("text")  // "text" | "markdown" | "json"
+  toolName        String?
+  toolInput       Json?
+  toolOutput      Json?
+  toolError       String?
+  inputTokens     Int?
+  outputTokens    Int?
+  latencyMs       Int?
+  modelUsed       String?
+  stopReason      String?     // "end_turn", "max_tokens", "tool_use", etc.
+  isHidden        Boolean     @default(false)  // system messages hidden in UI
+  parentMessageId BigInt?     // for branching conversation trees
+
+  // Citations, retrieved chunks, confidence scores, safety scores
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+
+  conversation   AIConversation   @relation(fields: [conversationId], references: [id])
+  parentMessage  AIMessage?       @relation("MessageBranch", fields: [parentMessageId], references: [id])
+  branches       AIMessage[]      @relation("MessageBranch")
+  embeddings     VectorEmbedding[]
+  feedback       AIFeedback[]
+
+  @@index([conversationId, createdAt])
+  @@index([conversationId, role])
+}
+
+// Full audit trail for AI autonomous actions (storyboard writes, alerts, etc.)
+model AIActionLog {
+  id              BigInt   @id @default(autoincrement())
+  conversationId  BigInt?
+  caseId          BigInt?
+  storyboardId    BigInt?
+  actionType      String   // "storyboard_append", "alert_triggered", "protocol_suggest"
+  trigger         String?  // what caused this: "new_observation", "scheduled", "user_request"
+  reasoning       String?  // AI chain-of-thought / scratchpad
+  inputSummary    String?  // brief of what AI received
+  outputSummary   String?  // brief of what AI produced
+  modelUsed       String?
+  inputTokens     Int?
+  outputTokens    Int?
+  latencyMs       Int?
+  confidence      Float?
+  wasReverted     Boolean  @default(false)
+  revertedBy      BigInt?
+  revertedAt      DateTime?
+  revertReason    String?
+
+  // Full tool call payloads, retrieved context, raw model response
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+
+  @@index([caseId])
+  @@index([conversationId])
+  @@index([actionType, createdAt])
+  @@index([storyboardId])
+}
+
+// Doctor ratings on AI outputs — feeds future fine-tuning / RLHF
+model AIFeedback {
+  id              BigInt   @id @default(autoincrement())
+  userId          BigInt
+  conversationId  BigInt?
+  messageId       BigInt?
+  rating          Int      // 1–5
+  isHelpful       Boolean?
+  isAccurate      Boolean?
+  isSafe          Boolean?
+  feedbackText    String?
+  correctedOutput String?  // what the correct answer should have been
+  tags            String[] // "wrong_dosage", "missed_diagnosis", "good_reasoning"
+
+  // Survey data, UI context at time of feedback
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+
+  user         User            @relation(fields: [userId], references: [id])
+  conversation AIConversation? @relation(fields: [conversationId], references: [id])
+  message      AIMessage?      @relation(fields: [messageId], references: [id])
+
+  @@index([conversationId])
+  @@index([userId])
+  @@index([rating])
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DOMAIN 5 — KNOWLEDGE & EMBEDDINGS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Chunked knowledge items: guidelines, papers, internal docs, protocols
+model KnowledgeChunk {
+  id              BigInt          @id @default(autoincrement())
+  organizationId  BigInt?         // null = global/platform knowledge
+  parentDocId     BigInt?         // for grouping chunks from same document
+  title           String?
+  content         String
+  contentHash     String?         // SHA-256 for dedup detection
+  source          String?         // "NICE", "UpToDate", "PubMed", "internal"
+  sourceUrl       String?
+  sourceType      String?         // "guideline", "paper", "textbook", "policy"
+  authors         String[]
+  publishedDate   DateTime?
+  specialty       SpecialtyDomain?
+  chunkIndex      Int?            // position within parent document
+  chunkTotal      Int?            // total chunks in parent doc
+  language        String          @default("en")
+  wordCount       Int?
+  isActive        Boolean         @default(true)
+  isVerified      Boolean         @default(false)  // expert-verified
+  verifiedById    BigInt?
+  verifiedAt      DateTime?
+  evidenceLevel   String?         // "A", "B", "C", "expert_opinion"
+  citationCount   Int?
+
+  // FHIR resource links, MeSH terms, keywords, custom taxonomies
+  metadata     Json     @default("{}")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  organization  Organization?    @relation(fields: [organizationId], references: [id])
+  parent        KnowledgeChunk?  @relation("ChunkHierarchy", fields: [parentDocId], references: [id])
+  children      KnowledgeChunk[] @relation("ChunkHierarchy")
+  embeddings    VectorEmbedding[]
+  tags          KnowledgeTag[]
+
+  @@index([organizationId, specialty])
+  @@index([isActive, specialty])
+  @@index([contentHash])
+  @@index([parentDocId])
+}
+
+// Polymorphic vector embedding table — one row per embedded content item
+// Run after migration:
+//   CREATE INDEX ON "VectorEmbedding" USING hnsw (embedding vector_cosine_ops)
+//   WITH (m = 16, ef_construction = 64);
+model VectorEmbedding {
+  id               BigInt              @id @default(autoincrement())
+  sourceType       EmbeddingSourceType
+  sourceId         BigInt              // ID of the source record (type-scoped)
+
+  // Typed FKs — only one is set; sourceId above is for fast generic lookup
+  knowledgeChunkId    BigInt?
+  observationId       BigInt?
+  storyboardEntryId   BigInt?
+  expertisePostId     BigInt?
+  messageId           BigInt?
+  annotationId        BigInt?
+  contentAssetId      BigInt?
+
+  modelUsed        String              // "text-embedding-3-large"
+  modelVersion     String?
+  dimensions       Int                 // 1536, 3072, etc.
+  embedding        Unsupported("vector(1536)")?
+
+  // Chunk hash, token count, processing time, language
+  metadata     Json     @default("{}")
+  createdAt    DateTime @default(now())
+
+  knowledgeChunk   KnowledgeChunk?   @relation(fields: [knowledgeChunkId],   references: [id])
+  observation      CaseObservation?  @relation(fields: [observationId],       references: [id])
+  storyboardEntry  StoryboardEntry?  @relation(fields: [storyboardEntryId],   references: [id])
+  expertisePost    ExpertisePost?    @relation(fields: [expertisePostId],      references: [id])
+  message          AIMessage?        @relation(fields: [messageId],            references: [id])
+  annotation       Annotation?       @relation(fields: [annotationId],         references: [id])
+  contentAsset     ContentAsset?     @relation(fields: [contentAssetId],       references: [id])
+
+  @@index([sourceType, sourceId])
+  @@index([knowledgeChunkId])
+  @@index([expertisePostId])
+  @@index([storyboardEntryId])
+}
+
+// Versioned clinical protocols with branching step support
+model MedicalProtocol {
+  id              BigInt          @id @default(autoincrement())
+  organizationId  BigInt?         // null = system-wide / shared
+  name            String
+  description     String?
+  rationale       String?
+  specialty       SpecialtyDomain?
+  version         String          @default("1.0.0")
+  previousVersionId BigInt?       // linked list of versions
+  isActive        Boolean         @default(true)
+  isApproved      Boolean         @default(false)
+  approvedById    BigInt?
+  approvedAt      DateTime?
+  publishedAt     DateTime?
+  archivedAt      DateTime?
+  targetPopulation String?        // "adult", "pediatric", "ICU"
+  estimatedDurationMin Int?
+  evidenceSource  String?         // guideline source
+
+  // Custom fields, regulatory refs, change log, country overrides
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  organization       Organization?      @relation(fields: [organizationId], references: [id])
+  previousVersion    MedicalProtocol?   @relation("ProtocolVersion", fields: [previousVersionId], references: [id])
+  nextVersions       MedicalProtocol[]  @relation("ProtocolVersion")
+  steps              ProtocolStep[]
+  emergencySessions  EmergencySession[]
+  tags               ProtocolTag[]
+
+  @@index([organizationId, specialty, isActive])
+}
+
+model ProtocolStep {
+  id                BigInt           @id @default(autoincrement())
+  protocolId        BigInt
+  type              ProtocolStepType @default(ACTION)
+  title             String
+  description       String
+  rationale         String?
+  order             Int
+  isCritical        Boolean          @default(false)
+  isOptional        Boolean          @default(false)
+  durationEstimateSec Int?
+  timerAlertSec     Int?             // alert if step takes longer
+  condition         String?          // branching condition expression
+  branchTargetId    BigInt?          // step to jump to if condition met
+  defaultNextId     BigInt?          // explicit next step (null = order + 1)
+  drugName          String?
+  drugDoseMgKg      Float?
+  drugRoute         String?
+  drugNotes         String?
+  requiredEquipment String[]
+  checklistItems    Json?            // [{label, required}]
+
+  // Guideline references, media links, training notes
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  protocol      MedicalProtocol  @relation(fields: [protocolId], references: [id])
+  stepLogs      SessionStepLog[]
+  branchTarget  ProtocolStep?    @relation("StepBranch",   fields: [branchTargetId], references: [id])
+  branchSources ProtocolStep[]   @relation("StepBranch")
+  defaultNext   ProtocolStep?    @relation("StepSequence", fields: [defaultNextId],  references: [id])
+  nextSources   ProtocolStep[]   @relation("StepSequence")
+
+  @@index([protocolId, order])
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DOMAIN 6 — CONTENT STORE
+// ══════════════════════════════════════════════════════════════════════════════
+
+// All binary/media files uploaded to the platform
+model ContentAsset {
+  id               BigInt             @id @default(autoincrement())
+  organizationId   BigInt
+  uploadedById     BigInt
+  type             ContentAssetType
+  status           ContentAssetStatus @default(PENDING_UPLOAD)
+  fileName         String
+  fileNameOriginal String
+  mimeType         String
+  fileSizeBytes    BigInt
+  storageProvider  String             // "s3", "gcs", "azure_blob", "local"
+  storageBucket    String?
+  storageKey       String             // path/key in the storage provider
+  storageRegion    String?
+  publicUrl        String?            // CDN URL if publicly accessible
+  signedUrlExpiry  DateTime?
+  checksum         String?            // MD5 or SHA-256 for integrity
+  isPublic         Boolean            @default(false)
+  isSensitive      Boolean            @default(true)   // medical data = sensitive by default
+  scanStatus       String?            // "pending", "clean", "infected"
+  scannedAt        DateTime?
+  processedAt      DateTime?
+  deletedAt        DateTime?
+  expiresAt        DateTime?          // auto-delete after this date
+
+  // EXIF, DICOM tags, image dimensions, duration, page count
+  assetMeta    Json     @default("{}")
+  // Access control, watermark config, compliance flags
+  metadata     Json     @default("{}")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  organization  Organization      @relation(fields: [organizationId], references: [id])
+  uploadedBy    User              @relation("AssetUploader", fields: [uploadedById], references: [id])
+  caseAssets    CaseAsset[]
+  embeddings    VectorEmbedding[]
+  thumbnails    AssetThumbnail[]
+  versions      AssetVersion[]
+
+  @@index([organizationId, type, status])
+  @@index([uploadedById])
+  @@index([storageKey])
+  @@index([deletedAt])
+}
+
+// Many-to-many: cases ↔ assets (an asset can attach to multiple cases)
+model CaseAsset {
+  id          BigInt   @id @default(autoincrement())
+  caseId      BigInt
+  assetId     BigInt
+  label       String?  // "Chest X-Ray Day 1", "Pre-op ECG"
   description String?
+  addedById   BigInt?
+  addedAt     DateTime @default(now())
+  metadata    Json     @default("{}")
 
-  createdAt   DateTime @default(now())
+  case  ClinicalCase @relation(fields: [caseId], references: [id])
+  asset ContentAsset @relation(fields: [assetId], references: [id])
 
-  steps       Step[]
-  sessions    EmergencySession[]
+  @@unique([caseId, assetId])
+  @@index([caseId])
 }
 
-///////////////////////
-// STEPS
-///////////////////////
-
-model Step {
-  id          String   @id @default(uuid())
-  protocolId  String
-
-  title       String
-  description String
-  order       Int
-
-  protocol    Protocol @relation(fields: [protocolId], references: [id])
-
-  logs        SessionStepLog[]
-}
-
-///////////////////////
-// STEP LOG
-///////////////////////
-
-model SessionStepLog {
-  id           String   @id @default(uuid())
-  sessionId    String
-  stepId       String
-
-  status       StepStatus @default(PENDING)
-  completedAt  DateTime?
-
-  session      EmergencySession @relation(fields: [sessionId], references: [id])
-  step         Step             @relation(fields: [stepId], references: [id])
-}
-
-///////////////////////
-// AI SUGGESTIONS
-///////////////////////
-
-model AISuggestion {
-  id          String   @id @default(uuid())
-  sessionId   String
-
-  message     String
-  createdAt   DateTime @default(now())
-
-  session     EmergencySession @relation(fields: [sessionId], references: [id])
-}
-
-///////////////////////
-// CHAT SYSTEM (AI ASSISTANT)
-///////////////////////
-
-model Chat {
-  id          String   @id @default(uuid())
-  userId      String
-  sessionId   String?
-
-  createdAt   DateTime @default(now())
-
-  user        User     @relation(fields: [userId], references: [id])
-  session     EmergencySession? @relation(fields: [sessionId], references: [id])
-
-  messages    ChatMessage[]
-}
-
-model ChatMessage {
-  id        String   @id @default(uuid())
-  chatId    String
-
-  sender    SenderType
-  content   String
-
+// Thumbnails and preview variants for assets
+model AssetThumbnail {
+  id        BigInt   @id @default(autoincrement())
+  assetId   BigInt
+  variant   String   // "thumb_128", "preview_512", "webp_full"
+  mimeType  String
+  width     Int?
+  height    Int?
+  sizeBytes Int?
+  url       String
+  metadata  Json     @default("{}")
   createdAt DateTime @default(now())
 
-  chat      Chat @relation(fields: [chatId], references: [id])
+  asset ContentAsset @relation(fields: [assetId], references: [id])
+
+  @@index([assetId])
+}
+
+// Version history for mutable assets (e.g. annotated PDFs)
+model AssetVersion {
+  id          BigInt   @id @default(autoincrement())
+  assetId     BigInt
+  version     Int
+  storageKey  String
+  fileSizeBytes BigInt
+  changedById BigInt?
+  changeNote  String?
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+
+  asset ContentAsset @relation(fields: [assetId], references: [id])
+
+  @@unique([assetId, version])
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DOMAIN 7 — COLLABORATION LAYER
+// ══════════════════════════════════════════════════════════════════════════════
+
+model CollabRoom {
+  id              BigInt           @id @default(autoincrement())
+  organizationId  BigInt
+  caseId          BigInt?
+  hostId          BigInt?
+  title           String
+  description     String?
+  type            CollabRoomType   @default(CASE_REVIEW)
+  status          CollabRoomStatus @default(WAITING)
+  maxParticipants Int              @default(10)
+  isRecorded      Boolean          @default(false)
+  isPublic        Boolean          @default(false)
+  passcode        String?          // optional room lock
+  scheduledAt     DateTime?
+  startedAt       DateTime?
+  endedAt         DateTime?
+  durationSec     Int?
+  recordingUrl    String?
+  summary         String?          // AI-generated post-session summary
+  aiSummaryAt     DateTime?
+  agendaItems     Json?            // [{title, duration, presenter}]
+
+  // Conferencing provider config (Daily.co, Jitsi, etc.), recording refs
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  organization      Organization        @relation(fields: [organizationId], references: [id])
+  case              ClinicalCase?       @relation(fields: [caseId], references: [id])
+  participants      CollabParticipant[]
+  conversations     AIConversation[]
+  learningSessions  LearningSession[]
+  roomMessages      RoomMessage[]
+
+  @@index([organizationId, status])
+  @@index([caseId])
+  @@index([scheduledAt])
+}
+
+model CollabParticipant {
+  id          BigInt          @id @default(autoincrement())
+  roomId      BigInt
+  userId      BigInt
+  role        ParticipantRole @default(OBSERVER)
+  joinedAt    DateTime        @default(now())
+  leftAt      DateTime?
+  isActive    Boolean         @default(true)
+  speakTime   Int?            // seconds spent speaking (from transcription)
+  raisedHandAt DateTime?
+  metadata    Json            @default("{}")
+
+  room CollabRoom @relation(fields: [roomId], references: [id])
+  user User       @relation(fields: [userId], references: [id])
+
+  @@unique([roomId, userId])
+  @@index([userId, isActive])
+}
+
+// Chat messages within a collaboration room (distinct from AI conversations)
+model RoomMessage {
+  id          BigInt   @id @default(autoincrement())
+  roomId      BigInt
+  senderId    BigInt
+  content     String
+  contentType String   @default("text")  // "text" | "markdown" | "image_ref"
+  assetId     BigInt?
+  isAI        Boolean  @default(false)
+  isPinned    Boolean  @default(false)
+  editedAt    DateTime?
+  deletedAt   DateTime?
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+
+  room CollabRoom @relation(fields: [roomId], references: [id])
+
+  @@index([roomId, createdAt])
+}
+
+// Doctor-published experience, case reports, clinical insights
+model ExpertisePost {
+  id            BigInt          @id @default(autoincrement())
+  authorId      BigInt
+  title         String
+  content       String          // rich text / markdown
+  summary       String?         // AI-generated abstract
+  status        PostStatus      @default(DRAFT)
+  specialty     SpecialtyDomain?
+  icdCodes      String[]
+  isAnonymized  Boolean         @default(false)
+  isPeerReviewed Boolean        @default(false)
+  reviewedById  BigInt?
+  reviewedAt    DateTime?
+  viewCount     Int             @default(0)
+  likeCount     Int             @default(0)   // denormalized counter
+  commentCount  Int             @default(0)   // denormalized counter
+  shareCount    Int             @default(0)
+  readTimeMin   Int?            // estimated read time
+  publishedAt   DateTime?
+  archivedAt    DateTime?
+
+  // Keywords, external DOI, peer review notes, moderation flags
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  author     User            @relation(fields: [authorId], references: [id])
+  comments   PostComment[]
+  reactions  PostReaction[]
+  embeddings VectorEmbedding[]
+  tags       PostTag[]
+
+  @@index([authorId, status])
+  @@index([specialty, status])
+  @@index([publishedAt])
+}
+
+model PostComment {
+  id          BigInt   @id @default(autoincrement())
+  postId      BigInt
+  authorId    BigInt
+  parentId    BigInt?  // threaded replies
+  content     String
+  isAI        Boolean  @default(false)
+  isPinned    Boolean  @default(false)
+  editedAt    DateTime?
+  deletedAt   DateTime?
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  post    ExpertisePost  @relation(fields: [postId], references: [id])
+  author  User           @relation(fields: [authorId], references: [id])
+  parent  PostComment?   @relation("CommentThread", fields: [parentId], references: [id])
+  replies PostComment[]  @relation("CommentThread")
+
+  @@index([postId, createdAt])
+  @@index([authorId])
+  @@index([parentId])
+}
+
+model PostReaction {
+  id        BigInt   @id @default(autoincrement())
+  postId    BigInt
+  userId    BigInt
+  emoji     String   // "👍" | "💡" | "❤️" | "🔖"
+  createdAt DateTime @default(now())
+
+  post ExpertisePost @relation(fields: [postId], references: [id])
+  user User          @relation(fields: [userId], references: [id])
+
+  @@unique([postId, userId, emoji])
+  @@index([postId])
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DOMAIN 8 — LEARNING & STUDENT LAYER
+// ══════════════════════════════════════════════════════════════════════════════
+
+model LearningSession {
+  id              BigInt   @id @default(autoincrement())
+  userId          BigInt
+  caseId          BigInt?
+  roomId          BigInt?
+  learningGoal    String?
+  startedAt       DateTime @default(now())
+  endedAt         DateTime?
+  durationSec     Int?
+  completionPct   Float?   // 0–100
+  quizScore       Float?
+  notes           String?
+  aiSummary       String?  // AI-generated learning debrief
+  isGraded        Boolean  @default(false)
+  gradedById      BigInt?
+  gradedAt        DateTime?
+  grade           String?
+
+  // Curriculum links, competency framework refs, engagement metrics
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user        User          @relation(fields: [userId], references: [id])
+  case        ClinicalCase? @relation(fields: [caseId], references: [id])
+  room        CollabRoom?   @relation(fields: [roomId], references: [id])
+  annotations Annotation[]
+  quizResults QuizResult[]
+
+  @@index([userId])
+  @@index([caseId])
+  @@index([roomId])
+}
+
+// Quiz results for knowledge checks attached to a learning session
+model QuizResult {
+  id          BigInt   @id @default(autoincrement())
+  sessionId   BigInt
+  questionId  BigInt?  // optional ref to a question bank
+  question    String
+  options     Json?    // [{label, value}]
+  userAnswer  String?
+  correctAnswer String?
+  isCorrect   Boolean?
+  explanation String?
+  timeTakenSec Int?
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+
+  session LearningSession @relation(fields: [sessionId], references: [id])
+
+  @@index([sessionId])
+}
+
+// Inline highlights and notes on any content (case, post, storyboard)
+model Annotation {
+  id            BigInt   @id @default(autoincrement())
+  userId        BigInt
+  sessionId     BigInt?
+  sourceType    String   // "storyboard_entry"|"expertise_post"|"observation"|"asset"
+  sourceId      BigInt
+  selectedText  String?
+  note          String?
+  color         String?  // highlight color hex
+  startOffset   Int?     // char offset in source text
+  endOffset     Int?
+  isPrivate     Boolean  @default(true)
+  isFlagged     Boolean  @default(false)
+  resolvedAt    DateTime?
+  metadata      Json     @default("{}")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user            User             @relation(fields: [userId], references: [id])
+  learningSession LearningSession? @relation(fields: [sessionId], references: [id])
+  embeddings      VectorEmbedding[]
+
+  @@index([userId, sourceType])
+  @@index([sourceType, sourceId])
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DOMAIN 9 — EMERGENCY SESSIONS (upgraded)
+// ══════════════════════════════════════════════════════════════════════════════
+
+model EmergencySession {
+  id                BigInt        @id @default(autoincrement())
+  userId            BigInt
+  caseId            BigInt?
+  protocolId        BigInt
+  status            SessionStatus @default(ACTIVE)
+  patientWeightKg   Float?
+  patientAgeYears   Int?
+  patientSex        String?
+  currentStepId     BigInt?       // which step we're on right now
+  handedOffToId     BigInt?       // user id if handed off
+  handoffNote       String?
+  startedAt         DateTime      @default(now())
+  endedAt           DateTime?
+  durationSec       Int?
+  compressionCount  Int?          // CPR-specific
+  shockCount        Int?          // defib-specific
+  notes             String?
+  outcomeNote       String?
+
+  // Device readings, team composition, room/bay, vital sign stream
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user      User            @relation(fields: [userId], references: [id])
+  case      ClinicalCase?   @relation(fields: [caseId], references: [id])
+  protocol  MedicalProtocol @relation(fields: [protocolId], references: [id])
+  stepLogs  SessionStepLog[]
+
+  @@index([userId, status])
+  @@index([caseId])
+  @@index([protocolId])
+  @@index([startedAt])
+}
+
+model SessionStepLog {
+  id            BigInt     @id @default(autoincrement())
+  sessionId     BigInt
+  stepId        BigInt
+  executorId    BigInt?    // who performed this step
+  status        StepStatus @default(PENDING)
+  attemptCount  Int        @default(1)
+  notes         String?
+  aiAssisted    Boolean    @default(false)
+  aiSuggestion  String?    // what AI recommended at this step
+  drugDoseGiven Float?     // actual dose given (may differ from protocol)
+  drugUnit      String?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  skippedAt     DateTime?
+  durationSec   Int?
+
+  // Checklist completion, device readings at time of step
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+
+  session   EmergencySession @relation(fields: [sessionId], references: [id])
+  step      ProtocolStep     @relation(fields: [stepId], references: [id])
+  executor  User?            @relation("StepExecutor", fields: [executorId], references: [id])
+
+  @@index([sessionId])
+  @@index([stepId])
+  @@index([executorId])
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DOMAIN 10 — TAXONOMY
+// ══════════════════════════════════════════════════════════════════════════════
+
+model Tag {
+  id             Int      @id @default(autoincrement())  // small table, Int is fine
+  organizationId BigInt?
+  name           String
+  slug           String
+  description    String?
+  color          String?
+  category       String?  // "specialty" | "condition" | "treatment" | "anatomy"
+  parentId       Int?     // hierarchical tags
+  usageCount     Int      @default(0)  // denormalized for sort-by-popularity
+  isSystem       Boolean  @default(false)  // platform-wide tags vs org-created
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now())
+
+  organization Organization? @relation(fields: [organizationId], references: [id])
+  parent       Tag?          @relation("TagHierarchy", fields: [parentId], references: [id])
+  children     Tag[]         @relation("TagHierarchy")
+  caseTags     CaseTag[]
+  postTags     PostTag[]
+  knowledgeTags KnowledgeTag[]
+  protocolTags  ProtocolTag[]
+  userTags      UserTag[]
+
+  @@unique([organizationId, slug])
+  @@index([category])
+  @@index([usageCount])
+}
+
+model CaseTag {
+  caseId    BigInt
+  tagId     Int
+  addedById BigInt?
+  addedAt   DateTime @default(now())
+  case Tag  ClinicalCase @relation(fields: [caseId], references: [id])
+  tag       Tag          @relation(fields: [tagId], references: [id])
+  @@id([caseId, tagId])
+  @@index([tagId])
+}
+
+model PostTag {
+  postId    BigInt
+  tagId     Int
+  addedAt   DateTime @default(now())
+  post      ExpertisePost @relation(fields: [postId], references: [id])
+  tag       Tag           @relation(fields: [tagId], references: [id])
+  @@id([postId, tagId])
+  @@index([tagId])
+}
+
+model KnowledgeTag {
+  chunkId   BigInt
+  tagId     Int
+  addedAt   DateTime @default(now())
+  chunk     KnowledgeChunk @relation(fields: [chunkId], references: [id])
+  tag       Tag            @relation(fields: [tagId], references: [id])
+  @@id([chunkId, tagId])
+  @@index([tagId])
+}
+
+model ProtocolTag {
+  protocolId BigInt
+  tagId      Int
+  addedAt    DateTime @default(now())
+  protocol   MedicalProtocol @relation(fields: [protocolId], references: [id])
+  tag        Tag             @relation(fields: [tagId], references: [id])
+  @@id([protocolId, tagId])
+  @@index([tagId])
+}
+
+// User interest / expertise tags (for recommendation engine)
+model UserTag {
+  userId    BigInt
+  tagId     Int
+  weight    Float    @default(1.0)  // 0–1, increases with engagement
+  addedAt   DateTime @default(now())
+  user      User @relation(fields: [userId], references: [id])
+  tag       Tag  @relation(fields: [tagId], references: [id])
+  @@id([userId, tagId])
+  @@index([tagId])
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DOMAIN 11 — NOTIFICATIONS
+// ══════════════════════════════════════════════════════════════════════════════
+
+model Notification {
+  id          BigInt              @id @default(autoincrement())
+  userId      BigInt              // recipient
+  senderId    BigInt?             // null = system / AI
+  channel     NotificationChannel @default(IN_APP)
+  status      NotificationStatus  @default(PENDING)
+  type        String              // "case_alert", "room_invite", "post_comment", "ai_update"
+  title       String
+  body        String?
+  actionUrl   String?
+  iconType    String?
+  isRead      Boolean             @default(false)
+  readAt      DateTime?
+  sentAt      DateTime?
+  deliveredAt DateTime?
+  failReason  String?
+  expiresAt   DateTime?
+
+  // Template vars, deep link params, provider response IDs
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+
+  user   User  @relation(fields: [userId], references: [id])
+  sender User? @relation("NotificationSender", fields: [senderId], references: [id])
+
+  @@index([userId, isRead, createdAt])
+  @@index([userId, channel, status])
+  @@index([type, createdAt])
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DOMAIN 12 — SEARCH & PREFERENCES
+// ══════════════════════════════════════════════════════════════════════════════
+
+model SavedSearch {
+  id          BigInt   @id @default(autoincrement())
+  userId      BigInt
+  name        String
+  query       String
+  filters     Json     @default("{}")
+  resultCount Int?     // last result count
+  lastRunAt   DateTime?
+  isPinned    Boolean  @default(false)
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DOMAIN 13 — AUDIT & COMPLIANCE
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Append-only audit log — never update or delete rows
+model AuditLog {
+  id              BigInt      @id @default(autoincrement())
+  organizationId  BigInt
+  userId          BigInt?     // null for system/AI actions
+  action          AuditAction
+  entityType      String      // "ClinicalCase", "User", "StoryboardEntry", etc.
+  entityId        BigInt?
+  caseId          BigInt?     // denormalized for fast per-case audit queries
+  ipAddress       String?
+  userAgent       String?
+  sessionId       String?     // HTTP session id
+  requestId       String?     // trace/correlation id
+  durationMs      Int?
+  statusCode      Int?
+  errorMessage    String?
+  isSensitive     Boolean     @default(false)
+
+  // Full before/after diff, request body hash, compliance tags
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+
+  organization Organization  @relation(fields: [organizationId], references: [id])
+  user         User?         @relation(fields: [userId], references: [id])
+  case         ClinicalCase? @relation("CaseAuditLogs", fields: [caseId], references: [id])
+
+  @@index([organizationId, createdAt])
+  @@index([userId, createdAt])
+  @@index([entityType, entityId])
+  @@index([caseId, createdAt])
+  @@index([action, createdAt])
 }
